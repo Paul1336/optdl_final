@@ -7,7 +7,6 @@
 #include <vector>
 #include <algorithm>
 #include <numeric>
-#include <cstring>
 
 // ---------------- utilities ----------------
 template <class T>
@@ -140,18 +139,12 @@ std::vector<float> flash_attention(const float *__restrict__ Q, const float *__r
     std::vector<float> S(br * bc);
     std::vector<float> Mi_new(br);
     std::vector<float> Li_new(br);
-
-    std::vector<float> Q_tile(br * d);
-    std::vector<float> Kt_tile(d * bc);
-    std::vector<float> V_tile(bc * d);
     float sum;
     for (int i = 0; i < tr; ++i)
     {
         // Load Qi, and the partial outputs/statistics (Oi, mi, ℓi) to on-chip memory
         int current_br = std::min(br, N - i * br);
-        // const float *Q_i = Q + i * br * d;
-        std::memcpy(Q_tile.data(), Q + i * br * d, current_br * d * sizeof(float));
-
+        const float *Q_i = Q + i * br * d;
         float *O_i = O.data() + i * br * d;
         float *L_i = L.data() + i * br;
         float *M_i = M.data() + i * br;
@@ -160,12 +153,6 @@ std::vector<float> flash_attention(const float *__restrict__ Q, const float *__r
         {
             // Load Kj to on-chip memory.
             int current_bc = std::min(bc, N - j * bc);
-            for (int m = 0; m < d; ++m)
-            {
-                std::memcpy(&Kt_tile[m * current_bc],
-                            &Kt[m * N + j * bc],
-                            current_bc * sizeof(float));
-            }
             // compute Sij = QiKTj
             for (int k = 0; k < current_br; k++)
             {
@@ -174,7 +161,7 @@ std::vector<float> flash_attention(const float *__restrict__ Q, const float *__r
                     sum = 0;
                     for (int m = 0; m < d; m++)
                     {
-                        sum += Q_tile[k * d + m] * Kt_tile[m * current_bc + l];
+                        sum += Q_i[k * d + m] * Kt[m * N + j * bc + l];
                     }
                     S[k * current_bc + l] = sum * scale;
                 }
@@ -191,9 +178,6 @@ std::vector<float> flash_attention(const float *__restrict__ Q, const float *__r
                 Li_new[k] = L_i[k] * std::exp(M_i[k] - Mi_new[k]) + row_sum(S.data() + k * current_bc, current_bc);
             }
             // Load Vj , Accumulate output
-            std::memcpy(V_tile.data(),
-                        V + j * bc * d,
-                        current_bc * d * sizeof(float));
             for (int k = 0; k < current_br; k++)
             {
                 float scale_old = L_i[k] * std::exp(M_i[k] - Mi_new[k]) / Li_new[k];
@@ -203,7 +187,7 @@ std::vector<float> flash_attention(const float *__restrict__ Q, const float *__r
                     sum = 0;
                     for (int m = 0; m < current_bc; m++)
                     {
-                        sum += S[k * current_bc + m] * V_tile[m * d + l];
+                        sum += S[k * current_bc + m] * V[(j * bc + m) * d + l];
                     }
                     O_i[k * d + l] = O_i[k * d + l] * scale_old + sum * scale_new;
                 }
@@ -233,17 +217,8 @@ int main()
     //     int sqrt2 = int(base * std::sqrt(2.0));
     //     M_sizes.push_back(sqrt2);
     // }
-    M_sizes.push_back(4 * 1024);
-    M_sizes.push_back(128 * 1024);
-    M_sizes.push_back(192 * 1024);
-    M_sizes.push_back(256 * 1024);
-    M_sizes.push_back(2 * 1024 * 1024);
-    M_sizes.push_back(3 * 1024 * 1024);
-    M_sizes.push_back(4 * 1024 * 1024);
-    M_sizes.push_back(24 * 1024 * 1024);
-    M_sizes.push_back(32 * 1024 * 1024);
-    M_sizes.push_back(64 * 1024 * 1024);
-    for (int i = 6; i <= 16; i++)
+    M_sizes.push_back(16 * 1024);
+    for (int i = 4; i < 14; i++)
     {
         N_sizes.push_back(1 << i);
     }
